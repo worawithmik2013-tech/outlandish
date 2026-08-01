@@ -1,0 +1,588 @@
+--[[
+    ⚡ MULTI-TAB ULTRA HUB v4.0 (WITH PLAYER TELEPORT TAB)
+    - Tab 1: Speed, Jump, Fly Jump & Mobile/PC Fly System
+    - Tab 2: Custom Spawn Point & Rebirth System
+    - Tab 3: Native ESP Visuals & Noclip System
+    - Tab 4: Dynamic Player Teleport System (วาร์ปไปหาผู้เล่น)
+    - Feature: Standalone Draggable Fly Button
+--]]
+
+-- Services
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- Variables State
+local currentSpeed = 16
+local currentJump = 50
+local infJumpEnabled = false
+local rebirthCount = 0
+local customSpawnPoint = nil
+local espEnabled = false
+local noclipEnabled = false
+local noclipConnection = nil
+local selectedPlayerToTp = nil
+
+-- Fly Variables
+local flying = false
+local flySpeed = 50
+local bodyVelocity = nil
+local bodyGyro = nil
+local moveKeys = {W = false, A = false, S = false, D = false, E = false, Q = false}
+local mobileUpPressed = false
+local mobileDownPressed = false
+
+--------------------------------------------------------------------------------
+-- 1. ปุ่มลอยเปิด/ปิดบินแยกอิสระ (Draggable Fly Toggle Button)
+--------------------------------------------------------------------------------
+local floatingGui = Instance.new("ScreenGui")
+floatingGui.Name = "FloatingFlyGui"
+floatingGui.ResetOnSpawn = false
+floatingGui.Parent = playerGui
+
+local flyToggleBtn = Instance.new("TextButton")
+flyToggleBtn.Name = "StandaloneFlyButton"
+flyToggleBtn.Size = UDim2.new(0, 130, 0, 45)
+flyToggleBtn.Position = UDim2.new(0, 20, 0, 70)
+flyToggleBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+flyToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+flyToggleBtn.Font = Enum.Font.GothamBlack
+flyToggleBtn.TextSize = 13
+flyToggleBtn.Text = "🚀 เปิดบิน (FLY)"
+flyToggleBtn.Active = true
+flyToggleBtn.Parent = floatingGui
+
+local flyBtnCorner = Instance.new("UICorner")
+flyBtnCorner.CornerRadius = UDim.new(0, 10)
+flyBtnCorner.Parent = flyToggleBtn
+
+local flyBtnStroke = Instance.new("UIStroke")
+flyBtnStroke.Color = Color3.fromRGB(255, 255, 255)
+flyBtnStroke.Thickness = 2
+flyBtnStroke.Parent = flyToggleBtn
+
+-- Drag & Drop ปุ่มบิน
+local dragToggle, dragStart, startPos
+
+local function updateFlyBtnInput(input)
+	local delta = input.Position - dragStart
+	flyToggleBtn.Position = UDim2.new(
+		startPos.X.Scale, startPos.X.Offset + delta.X,
+		startPos.Y.Scale, startPos.Y.Offset + delta.Y
+	)
+end
+
+flyToggleBtn.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		dragToggle = true
+		dragStart = input.Position
+		startPos = flyToggleBtn.Position
+
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				dragToggle = false
+			end
+		end)
+	end
+end)
+
+flyToggleBtn.InputChanged:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+		if dragToggle then updateFlyBtnInput(input) end
+	end
+end)
+
+--------------------------------------------------------------------------------
+-- 2. ปุ่มควบคุมการบินขึ้น-ลง บนมือถือ
+--------------------------------------------------------------------------------
+local mobileFlyGui = Instance.new("ScreenGui")
+mobileFlyGui.Name = "MobileFlyControls"
+mobileFlyGui.ResetOnSpawn = false
+mobileFlyGui.Parent = playerGui
+
+local mobileUpBtn = Instance.new("TextButton")
+mobileUpBtn.Size = UDim2.new(0, 60, 0, 60)
+mobileUpBtn.Position = UDim2.new(1, -80, 0.5, -70)
+mobileUpBtn.BackgroundColor3 = Color3.fromRGB(0, 180, 255)
+mobileUpBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+mobileUpBtn.Font = Enum.Font.GothamBold
+mobileUpBtn.TextSize = 20
+mobileUpBtn.Text = "⬆️"
+mobileUpBtn.Visible = false
+mobileUpBtn.Parent = mobileFlyGui
+
+local upCorner = Instance.new("UICorner")
+upCorner.CornerRadius = UDim.new(0, 30)
+upCorner.Parent = mobileUpBtn
+
+local mobileDownBtn = Instance.new("TextButton")
+mobileDownBtn.Size = UDim2.new(0, 60, 0, 60)
+mobileDownBtn.Position = UDim2.new(1, -80, 0.5, 0)
+mobileDownBtn.BackgroundColor3 = Color3.fromRGB(0, 180, 255)
+mobileDownBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+mobileDownBtn.Font = Enum.Font.GothamBold
+mobileDownBtn.TextSize = 20
+mobileDownBtn.Text = "⬇️"
+mobileDownBtn.Visible = false
+mobileDownBtn.Parent = mobileFlyGui
+
+local downCorner = Instance.new("UICorner")
+downCorner.CornerRadius = UDim.new(0, 30)
+downCorner.Parent = mobileDownBtn
+
+mobileUpBtn.MouseButton1Down:Connect(function() mobileUpPressed = true end)
+mobileUpBtn.MouseButton1Up:Connect(function() mobileUpPressed = false end)
+mobileDownBtn.MouseButton1Down:Connect(function() mobileDownPressed = true end)
+mobileDownBtn.MouseButton1Up:Connect(function() mobileDownPressed = false end)
+
+--------------------------------------------------------------------------------
+-- 3. ระบบบินหลัก (Universal Fly System)
+--------------------------------------------------------------------------------
+local menuFlyToggleBtn
+
+local function stopFlying()
+	flying = false
+	if bodyVelocity then bodyVelocity:Destroy() end
+	if bodyGyro then bodyGyro:Destroy() end
+	if player.Character and player.Character:FindFirstChildOfClass("Humanoid") then
+		player.Character:FindFirstChildOfClass("Humanoid").PlatformStand = false
+	end
+
+	mobileUpBtn.Visible = false
+	mobileDownBtn.Visible = false
+	mobileUpPressed = false
+	mobileDownPressed = false
+
+	flyToggleBtn.Text = "🚀 เปิดบิน (FLY)"
+	flyToggleBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+
+	if menuFlyToggleBtn then
+		menuFlyToggleBtn.Text = "🚀 โหมดการบิน (FLY MODE): OFF"
+		menuFlyToggleBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 60)
+		menuFlyToggleBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+	end
+end
+
+local function startFlying()
+	local character = player.Character
+	if not character then return end
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not hrp or not humanoid then return end
+
+	flying = true
+	humanoid.PlatformStand = true
+
+	bodyVelocity = Instance.new("BodyVelocity")
+	bodyVelocity.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+	bodyVelocity.Velocity = Vector3.zero
+	bodyVelocity.Parent = hrp
+
+	bodyGyro = Instance.new("BodyGyro")
+	bodyGyro.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
+	bodyGyro.CFrame = hrp.CFrame
+	bodyGyro.Parent = hrp
+
+	flyToggleBtn.Text = "🛑 หยุดบิน (STOP)"
+	flyToggleBtn.BackgroundColor3 = Color3.fromRGB(230, 40, 60)
+
+	if menuFlyToggleBtn then
+		menuFlyToggleBtn.Text = "🚀 โหมดการบิน (FLY MODE): ON"
+		menuFlyToggleBtn.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
+		menuFlyToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	end
+
+	if UserInputService.TouchEnabled then
+		mobileUpBtn.Visible = true
+		mobileDownBtn.Visible = true
+	end
+
+	task.spawn(function()
+		while flying and character and hrp and humanoid do
+			local camera = workspace.CurrentCamera
+			local moveVector = Vector3.zero
+
+			local moveDir = humanoid.MoveDirection
+			if moveDir.Magnitude > 0 then
+				local cameraCFrame = camera.CFrame
+				moveVector = cameraCFrame:VectorToWorldSpace(cameraCFrame:VectorToObjectSpace(moveDir))
+			end
+
+			if moveKeys.W then moveVector = moveVector + camera.CFrame.LookVector end
+			if moveKeys.S then moveVector = moveVector - camera.CFrame.LookVector end
+			if moveKeys.A then moveVector = moveVector - camera.CFrame.RightVector end
+			if moveKeys.D then moveVector = moveVector + camera.CFrame.RightVector end
+			if moveKeys.E then moveVector = moveVector + Vector3.new(0, 1, 0) end
+			if moveKeys.Q then moveVector = moveVector - Vector3.new(0, 1, 0) end
+
+			if mobileUpPressed then moveVector = moveVector + Vector3.new(0, 1, 0) end
+			if mobileDownPressed then moveVector = moveVector - Vector3.new(0, 1, 0) end
+
+			if moveVector.Magnitude > 0 then
+				moveVector = moveVector.Unit * flySpeed
+			end
+
+			bodyVelocity.Velocity = moveVector
+			bodyGyro.CFrame = camera.CFrame
+			RunService.RenderStepped:Wait()
+		end
+	end)
+end
+
+local function toggleFly()
+	if flying then stopFlying() else startFlying() end
+end
+
+flyToggleBtn.MouseButton1Click:Connect(toggleFly)
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+	if input.KeyCode == Enum.KeyCode.W then moveKeys.W = true end
+	if input.KeyCode == Enum.KeyCode.S then moveKeys.S = true end
+	if input.KeyCode == Enum.KeyCode.A then moveKeys.A = true end
+	if input.KeyCode == Enum.KeyCode.D then moveKeys.D = true end
+	if input.KeyCode == Enum.KeyCode.E then moveKeys.E = true end
+	if input.KeyCode == Enum.KeyCode.Q then moveKeys.Q = true end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+	if input.KeyCode == Enum.KeyCode.W then moveKeys.W = false end
+	if input.KeyCode == Enum.KeyCode.S then moveKeys.S = false end
+	if input.KeyCode == Enum.KeyCode.A then moveKeys.A = false end
+	if input.KeyCode == Enum.KeyCode.D then moveKeys.D = false end
+	if input.KeyCode == Enum.KeyCode.E then moveKeys.E = false end
+	if input.KeyCode == Enum.KeyCode.Q then moveKeys.Q = false end
+end)
+
+--------------------------------------------------------------------------------
+-- 4. ระบบ NOCLIP (เดินทะลุกำแพง)
+--------------------------------------------------------------------------------
+local function toggleNoclip(state)
+	noclipEnabled = state
+	if noclipEnabled then
+		noclipConnection = RunService.Stepped:Connect(function()
+			if player.Character then
+				for _, part in ipairs(player.Character:GetDescendants()) do
+					if part:IsA("BasePart") then
+						part.CanCollide = false
+					end
+				end
+			end
+		end)
+	else
+		if noclipConnection then
+			noclipConnection:Disconnect()
+			noclipConnection = nil
+		end
+		if player.Character then
+			for _, part in ipairs(player.Character:GetDescendants()) do
+				if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+					part.CanCollide = true
+				end
+			end
+		end
+	end
+end
+
+--------------------------------------------------------------------------------
+-- 5. ระบบ ESP (Highlight Native)
+--------------------------------------------------------------------------------
+local function updatePlayerESP(targetPlayer)
+	if targetPlayer == player then return end
+
+	local function setupCharESP(character)
+		if not character then return end
+
+		local highlight = character:FindFirstChild("UltraESP")
+		if not highlight then
+			highlight = Instance.new("Highlight")
+			highlight.Name = "UltraESP"
+			highlight.FillColor = Color3.fromRGB(0, 255, 180)
+			highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+			highlight.FillTransparency = 0.5
+			highlight.OutlineTransparency = 0
+			highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+			highlight.Parent = character
+		end
+		highlight.Enabled = espEnabled
+
+		local head = character:WaitForChild("Head", 3)
+		if head then
+			local bb = head:FindFirstChild("UltraESPName")
+			if not bb then
+				bb = Instance.new("BillboardGui")
+				bb.Name = "UltraESPName"
+				bb.Size = UDim2.new(0, 150, 0, 30)
+				bb.StudsOffset = Vector3.new(0, 2.5, 0)
+				bb.AlwaysOnTop = true
+
+				local nameLabel = Instance.new("TextLabel")
+				nameLabel.Size = UDim2.new(1, 0, 1, 0)
+				nameLabel.BackgroundTransparency = 1
+				nameLabel.Text = targetPlayer.Name
+				nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+				nameLabel.TextStrokeTransparency = 0
+				nameLabel.Font = Enum.Font.GothamBold
+				nameLabel.TextSize = 13
+				nameLabel.Parent = bb
+
+				bb.Parent = head
+			end
+			bb.Enabled = espEnabled
+		end
+	end
+
+	if targetPlayer.Character then setupCharESP(targetPlayer.Character) end
+	targetPlayer.CharacterAdded:Connect(setupCharESP)
+end
+
+local function toggleESPState(state)
+	espEnabled = state
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= player and p.Character then
+			local hl = p.Character:FindFirstChild("UltraESP")
+			if hl then hl.Enabled = espEnabled end
+			local head = p.Character:FindFirstChild("Head")
+			if head then
+				local bb = head:FindFirstChild("UltraESPName")
+				if bb then bb.Enabled = espEnabled end
+			end
+		end
+	end
+end
+
+for _, p in ipairs(Players:GetPlayers()) do updatePlayerESP(p) end
+Players.PlayerAdded:Connect(updatePlayerESP)
+
+--------------------------------------------------------------------------------
+-- 6. ระบบ FLY JUMP
+--------------------------------------------------------------------------------
+UserInputService.JumpRequest:Connect(function()
+	if infJumpEnabled then
+		local character = player.Character
+		if character then
+			local humanoid = character:FindFirstChildOfClass("Humanoid")
+			if humanoid then humanoid:ChangeState(Enum.HumanoidStateType.Jumping) end
+		end
+	end
+end)
+
+--------------------------------------------------------------------------------
+-- 7. สร้าง UI หลัก & Multi-Tab System
+--------------------------------------------------------------------------------
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "UltraControlGuiV4_0"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = playerGui
+
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Name = "ToggleButton"
+toggleBtn.Size = UDim2.new(0, 120, 0, 38)
+toggleBtn.Position = UDim2.new(0, 20, 0, 20)
+toggleBtn.BackgroundColor3 = Color3.fromRGB(120, 40, 220)
+toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+toggleBtn.Font = Enum.Font.GothamBold
+toggleBtn.TextSize = 13
+toggleBtn.Text = "👁️ ซ่อน UI [K]"
+toggleBtn.Parent = screenGui
+
+local toggleCorner = Instance.new("UICorner")
+toggleCorner.CornerRadius = UDim.new(0, 10)
+toggleCorner.Parent = toggleBtn
+
+local toggleStroke = Instance.new("UIStroke")
+toggleStroke.Color = Color3.fromRGB(180, 100, 255)
+toggleStroke.Thickness = 2
+toggleStroke.Parent = toggleBtn
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "MainFrame"
+mainFrame.Size = UDim2.new(0, 380, 0, 460)
+mainFrame.Position = UDim2.new(0.5, -190, 0.5, -230)
+mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+mainFrame.BorderSizePixel = 0
+mainFrame.Active = true
+mainFrame.Parent = screenGui
+
+local mainCorner = Instance.new("UICorner")
+mainCorner.CornerRadius = UDim.new(0, 14)
+mainCorner.Parent = mainFrame
+
+local mainStroke = Instance.new("UIStroke")
+mainStroke.Color = Color3.fromRGB(0, 230, 255)
+mainStroke.Thickness = 2
+mainStroke.Parent = mainFrame
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size = UDim2.new(1, 0, 0, 40)
+titleLabel.BackgroundColor3 = Color3.fromRGB(30, 30, 45)
+titleLabel.Text = "⚡ ULTRA HUB v4.0 ⚡"
+titleLabel.TextColor3 = Color3.fromRGB(0, 255, 200)
+titleLabel.Font = Enum.Font.GothamBlack
+titleLabel.TextSize = 16
+titleLabel.Parent = mainFrame
+
+local titleCorner = Instance.new("UICorner")
+titleCorner.CornerRadius = UDim.new(0, 14)
+titleCorner.Parent = titleLabel
+
+local tabContainer = Instance.new("Frame")
+tabContainer.Size = UDim2.new(1, -20, 0, 35)
+tabContainer.Position = UDim2.new(0, 10, 0, 48)
+tabContainer.BackgroundTransparency = 1
+tabContainer.Parent = mainFrame
+
+local tabLayout = Instance.new("UIListLayout")
+tabLayout.FillDirection = Enum.FillDirection.Horizontal
+tabLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+tabLayout.Padding = UDim.new(0, 4)
+tabLayout.Parent = tabContainer
+
+local contentContainer = Instance.new("Frame")
+contentContainer.Size = UDim2.new(1, -20, 1, -95)
+contentContainer.Position = UDim2.new(0, 10, 0, 90)
+contentContainer.BackgroundTransparency = 1
+contentContainer.Parent = mainFrame
+
+--------------------------------------------------------------------------------
+-- ระบบสลับหน้าแท็บ (4 แท็บ)
+--------------------------------------------------------------------------------
+local pages = {}
+local tabButtons = {}
+
+local function createTab(name, index)
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.new(0.235, 0, 1, 0)
+	btn.BackgroundColor3 = Color3.fromRGB(35, 35, 50)
+	btn.TextColor3 = Color3.fromRGB(180, 180, 180)
+	btn.Font = Enum.Font.GothamBold
+	btn.TextSize = 10
+	btn.Text = name
+	btn.Parent = tabContainer
+
+	local btnCorner = Instance.new("UICorner")
+	btnCorner.CornerRadius = UDim.new(0, 6)
+	btnCorner.Parent = btn
+
+	local page = Instance.new("ScrollingFrame")
+	page.Size = UDim2.new(1, 0, 1, 0)
+	page.BackgroundTransparency = 1
+	page.ScrollBarThickness = 4
+	page.ScrollBarImageColor3 = Color3.fromRGB(0, 230, 255)
+	page.CanvasSize = UDim2.new(0, 0, 0, 380)
+	page.Visible = (index == 1)
+	page.Parent = contentContainer
+
+	local pageLayout = Instance.new("UIListLayout")
+	pageLayout.Padding = UDim.new(0, 10)
+	pageLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	pageLayout.Parent = page
+
+	if index == 1 then
+		btn.BackgroundColor3 = Color3.fromRGB(0, 150, 200)
+		btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	end
+
+	table.insert(pages, page)
+	table.insert(tabButtons, btn)
+
+	btn.MouseButton1Click:Connect(function()
+		for i, p in ipairs(pages) do
+			p.Visible = (i == index)
+			tabButtons[i].BackgroundColor3 = Color3.fromRGB(35, 35, 50)
+			tabButtons[i].TextColor3 = Color3.fromRGB(180, 180, 180)
+		end
+		btn.BackgroundColor3 = Color3.fromRGB(0, 150, 200)
+		btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	end)
+
+	return page
+end
+
+local page1 = createTab("🏃 Move", 1)
+local page2 = createTab("📍 Spawn", 2)
+local page3 = createTab("👁️ Visuals", 3)
+local page4 = createTab("🌀 Teleport", 4)
+
+--------------------------------------------------------------------------------
+-- 8. ปุ่มและฟังก์ชั่นควบคุมในแต่ละแท็บ
+--------------------------------------------------------------------------------
+local function createInputRow(parent, labelText, defaultVal, order)
+	local frame = Instance.new("Frame")
+	frame.Size = UDim2.new(1, 0, 0, 35)
+	frame.BackgroundColor3 = Color3.fromRGB(30, 30, 42)
+	frame.LayoutOrder = order
+	frame.Parent = parent
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 8)
+	corner.Parent = frame
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(0.6, -10, 1, 0)
+	label.Position = UDim2.new(0, 10, 0, 0)
+	label.BackgroundTransparency = 1
+	label.Text = labelText
+	label.TextColor3 = Color3.fromRGB(220, 220, 220)
+	label.Font = Enum.Font.GothamMedium
+	label.TextSize = 13
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.Parent = frame
+
+	local box = Instance.new("TextBox")
+	box.Size = UDim2.new(0.4, -10, 0, 25)
+	box.Position = UDim2.new(0.6, 0, 0.5, -12.5)
+	box.BackgroundColor3 = Color3.fromRGB(45, 45, 65)
+	box.TextColor3 = Color3.fromRGB(0, 255, 200)
+	box.Font = Enum.Font.GothamBold
+	box.TextSize = 14
+	box.Text = tostring(defaultVal)
+	box.Parent = frame
+
+	local boxCorner = Instance.new("UICorner")
+	boxCorner.CornerRadius = UDim.new(0, 6)
+	boxCorner.Parent = box
+
+	return box
+end
+
+-- --- แท็บ 1: Movement & Fly ---
+local speedBox = createInputRow(page1, "🏃 ความเร็ว (WalkSpeed)", currentSpeed, 1)
+local jumpBox = createInputRow(page1, "🦘 ความสูงกระโดด (Jump)", currentJump, 2)
+
+local flyJumpBtn = Instance.new("TextButton")
+flyJumpBtn.Size = UDim2.new(1, 0, 0, 38)
+flyJumpBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 60)
+flyJumpBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+flyJumpBtn.Font = Enum.Font.GothamBold
+flyJumpBtn.TextSize = 13
+flyJumpBtn.Text = "🕊️ กระโดดไม่จำกัด (FLY JUMP): OFF"
+flyJumpBtn.LayoutOrder = 3
+flyJumpBtn.Parent = page1
+
+local flyCorner = Instance.new("UICorner")
+flyCorner.CornerRadius = UDim.new(0, 8)
+flyCorner.Parent = flyJumpBtn
+
+menuFlyToggleBtn = Instance.new("TextButton")
+menuFlyToggleBtn.Size = UDim2.new(1, 0, 0, 42)
+menuFlyToggleBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 60)
+menuFlyToggleBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+menuFlyToggleBtn.Font = Enum.Font.GothamBold
+menuFlyToggleBtn.TextSize = 14
+menuFlyToggleBtn.Text = "🚀 โหมดการบิน (FLY MODE): OFF"
+menuFlyToggleBtn.LayoutOrder = 4
+menuFlyToggleBtn.Parent = page1
+
+local flyToggleCorner = Instance.new("UICorner")
+flyToggleCorner.CornerRadius = UDim.new(0, 8)
+flyToggleCorner.Parent = menuFlyToggleBtn
+
+local flySpeedBox = createInputRow(page1, "⚡ ความเร็วการบิน (Fly Speed)", flySpeed, 5)
+
+-- --- แท็บ 2: Spawn & Rebirth ---
+local setSpawnBtn = Instance.new("TextButton")
+setSpawnBtn.Size = UD
